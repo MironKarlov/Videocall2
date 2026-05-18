@@ -10,7 +10,7 @@
         input { padding: 15px; font-size: 16px; border-radius: 50px; border: none; width: 90%; margin: 10px 0; text-align: center; background: #1a1a1a; color: white; }
         video { width: 100%; border-radius: 20px; margin-top: 10px; background: #111; }
         .box { background: #1a1a1a; padding: 20px; border-radius: 20px; margin: 15px 0; }
-        .green { background: #22c55e; color: black; }
+        .status { padding: 15px; border-radius: 20px; margin-top: 20px; }
     </style>
 </head>
 <body>
@@ -18,14 +18,9 @@
 <h2>🎬 ПЛЕЕР — СМОТРЕТЬ ДРУГА</h2>
 
 <div class="box">
-    <p>🌐 <strong>IP ХОСТА (сказал друг)</strong></p>
-    <input type="text" id="hostIp" placeholder="Введите IP хоста">
-</div>
-
-<div class="box">
     <p>🔢 <strong>НОМЕР КОМНАТЫ (которую создал хост)</strong></p>
-    <input type="text" id="roomNumber" placeholder="Номер комнаты">
-    <button id="connectBtn">🔗 ПОДКЛЮЧИТЬСЯ И СМОТРЕТЬ</button>
+    <input type="text" id="roomNumber" placeholder="Например: 123">
+    <button id="connectBtn">🔗 ПОДКЛЮЧИТЬСЯ</button>
 </div>
 
 <div id="videoArea" style="display:none">
@@ -36,11 +31,11 @@
     </div>
 </div>
 
-<div id="status" style="background:#333; padding:15px; border-radius:20px; margin-top:20px"></div>
+<div id="status" class="status" style="background:#333"></div>
 
 <script>
     let pc = null;
-    let hostIp = null;
+    let ws = null;
     let room = null;
 
     function status(msg, color = '#ffaa00') {
@@ -49,41 +44,51 @@
         div.style.background = color;
     }
 
-    // ПОДКЛЮЧЕНИЕ
-    document.getElementById('connectBtn').onclick = async () => {
-        hostIp = document.getElementById('hostIp').value.trim();
+    document.getElementById('connectBtn').onclick = () => {
         room = document.getElementById('roomNumber').value.trim();
-
-        if (!hostIp) {
-            status('❌ Введите IP хоста', '#8b0000');
-            return;
-        }
         if (!room) {
             status('❌ Введите номер комнаты', '#8b0000');
             return;
         }
 
-        status('🔍 Ищем комнату ' + room + ' на IP ' + hostIp + '...', '#ffaa00');
+        status('🔍 Ищем комнату ' + room + '...', '#ffaa00');
 
-        // Пытаемся получить offer из localStorage (через общий доступ - не работает между телефонами)
-        // Поэтому используем ручной обмен
+        ws = new WebSocket('wss://webrtc-signaling-server-1.onrender.com');
         
-        // Для реальной работы нужно использовать сервер или прямой обмен
-        // Показываем инструкцию
-        status('⚠️ ДЛЯ ПОДКЛЮЧЕНИЯ: попросите хоста нажать "Создать комнату" и отправить вам код вручную', '#ffaa00');
-        
-        // Запрашиваем код у пользователя
-        const offerCode = prompt('📥 Вставьте код, который дал хост (после создания комнаты):');
-        
-        if (!offerCode) {
-            status('❌ Нет кода', '#8b0000');
-            return;
-        }
+        ws.onopen = () => {
+            ws.send(JSON.stringify({ type: 'viewer', room: room }));
+        };
 
-        status('🎥 Подключаемся...', '#ffaa00');
+        ws.onmessage = async (msg) => {
+            const data = JSON.parse(msg.data);
+            
+            if (data.type === 'host_ready') {
+                status('📡 Хост найден, подключаемся...', '#ffaa00');
+            }
+            else if (data.type === 'offer') {
+                await handleOffer(data.offer);
+            }
+            else if (data.type === 'ice') {
+                if (pc) {
+                    await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                }
+            }
+            else if (data.type === 'error') {
+                status('❌ Комната ' + room + ' не найдена. Попросите хоста создать её', '#8b0000');
+            }
+        };
 
+        ws.onerror = () => {
+            status('❌ Ошибка сервера', '#8b0000');
+        };
+    };
+
+    async function handleOffer(offer) {
         pc = new RTCPeerConnection({
-            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
         });
 
         pc.ontrack = (e) => {
@@ -92,26 +97,24 @@
             status('✅ ВИДЕО ПОЛУЧАЮ!', '#1a5f1a');
         };
 
-        try {
-            const offer = JSON.parse(offerCode);
-            await pc.setRemoteDescription(new RTCSessionDescription(offer));
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            
-            // Отдаём ответ хосту
-            const answerCode = JSON.stringify(answer);
-            prompt('📤 Отправьте этот код ХОСТУ:', answerCode);
-            
-            status('✅ Код отправлен хосту, ожидаем видео...', '#1a5f1a');
-        } catch(e) {
-            status('❌ Неверный код', '#8b0000');
-        }
-    };
+        pc.onicecandidate = (e) => {
+            if (e.candidate && ws) {
+                ws.send(JSON.stringify({ type: 'ice', candidate: e.candidate, room: room }));
+            }
+        };
+
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        ws.send(JSON.stringify({ type: 'answer', answer: answer, room: room }));
+    }
 
     document.getElementById('stopBtn').onclick = () => {
         if (pc) pc.close();
+        if (ws) ws.close();
         document.getElementById('videoArea').style.display = 'none';
         status('📴 Отключено', '#333');
+        location.reload();
     };
 </script>
 </body>
