@@ -10,9 +10,8 @@
         input { padding: 15px; font-size: 16px; border-radius: 50px; border: none; width: 90%; margin: 10px 0; text-align: center; background: #1a1a1a; color: white; }
         video { width: 100%; border-radius: 20px; margin-top: 10px; background: #111; }
         .box { background: #1a1a1a; padding: 20px; border-radius: 20px; margin: 15px 0; }
-        .ip-box { background: #22c55e20; border: 2px solid #22c55e; padding: 15px; border-radius: 20px; font-size: 24px; font-family: monospace; }
-        .code-box { background: #3b82f620; border: 2px solid #3b82f6; padding: 15px; border-radius: 20px; font-size: 12px; font-family: monospace; word-break: break-all; text-align: left; max-height: 200px; overflow: auto; }
         .green { background: #22c55e; color: black; }
+        .status { padding: 15px; border-radius: 20px; margin-top: 20px; }
     </style>
 </head>
 <body>
@@ -20,49 +19,26 @@
 <h2>📡 ХОСТ — СОЗДАТЬ КОМНАТУ</h2>
 
 <div class="box">
-    <p>🌐 <strong>ВАШ IP (скажите другу)</strong></p>
-    <div class="ip-box" id="myIp">Определяется...</div>
-    <button id="copyIpBtn">📋 КОПИРОВАТЬ IP</button>
-</div>
-
-<div class="box">
     <p>🔢 <strong>НОМЕР КОМНАТЫ (придумайте)</strong></p>
     <input type="text" id="roomNumber" placeholder="Например: 123">
-    <button id="createRoomBtn">🏠 СОЗДАТЬ КОМНАТУ</button>
-</div>
-
-<div id="codeArea" style="display:none">
-    <div class="box">
-        <p>📤 <strong>ОТПРАВЬТЕ ЭТОТ КОД ДРУГУ</strong></p>
-        <div class="code-box" id="offerCode"></div>
-        <button id="copyCodeBtn">📋 КОПИРОВАТЬ КОД</button>
-    </div>
-</div>
-
-<div id="answerArea" style="display:none">
-    <div class="box">
-        <p>📥 <strong>ВСТАВЬТЕ ОТВЕТ ОТ ДРУГА</strong></p>
-        <textarea id="answerInput" rows="5" style="width:100%; padding:10px; border-radius:10px; background:#1a1a1a; color:white; border:1px solid #3b82f6"></textarea>
-        <button id="submitAnswerBtn">✅ ПОДТВЕРДИТЬ ОТВЕТ</button>
-    </div>
+    <button id="createBtn">🏠 СОЗДАТЬ КОМНАТУ</button>
 </div>
 
 <div id="cameraArea" style="display:none">
     <div class="box">
-        <p>🎥 <strong>ТРАНСЛЯЦИЯ (вас видят)</strong></p>
+        <p>🎥 <strong>ТРАНСЛЯЦИЯ ИДЁТ</strong></p>
         <video id="localVideo" autoplay playsinline muted></video>
         <button id="stopBtn" style="background:#dc2626">⏹️ ОСТАНОВИТЬ</button>
     </div>
 </div>
 
-<div id="status" style="background:#333; padding:15px; border-radius:20px; margin-top:20px"></div>
+<div id="status" class="status" style="background:#333"></div>
 
 <script>
     let localStream = null;
     let pc = null;
-    let myIp = null;
+    let ws = null;
     let room = null;
-    let currentOffer = null;
 
     function status(msg, color = '#ffaa00') {
         const div = document.getElementById('status');
@@ -70,31 +46,6 @@
         div.style.background = color;
     }
 
-    // Получить IP
-    async function getLocalIP() {
-        try {
-            const response = await fetch('https://api.ipify.org?format=json');
-            const data = await response.json();
-            return data.ip;
-        } catch(e) {
-            return prompt('Не удалось определить IP. Введите ваш IP вручную (из настроек Wi-Fi):');
-        }
-    }
-
-    // Показать IP
-    async function showMyIp() {
-        myIp = await getLocalIP();
-        document.getElementById('myIp').innerText = myIp;
-        status('✅ Ваш IP: ' + myIp + ' — скажите другу', '#1a5f1a');
-    }
-    showMyIp();
-
-    document.getElementById('copyIpBtn').onclick = () => {
-        navigator.clipboard.writeText(myIp);
-        status('✅ IP скопирован: ' + myIp, '#1a5f1a');
-    };
-
-    // Запуск камеры
     async function startCamera() {
         try {
             if (localStream) localStream.getTracks().forEach(t => t.stop());
@@ -107,8 +58,7 @@
         }
     }
 
-    // СОЗДАНИЕ КОМНАТЫ
-    document.getElementById('createRoomBtn').onclick = async () => {
+    document.getElementById('createBtn').onclick = async () => {
         room = document.getElementById('roomNumber').value.trim();
         if (!room) {
             status('❌ Введите номер комнаты', '#8b0000');
@@ -119,72 +69,65 @@
         const ok = await startCamera();
         if (!ok) return;
 
-        // Создаём WebRTC соединение
+        // Подключаемся к серверу
+        ws = new WebSocket('wss://webrtc-signaling-server-1.onrender.com');
+        
+        ws.onopen = () => {
+            ws.send(JSON.stringify({ type: 'host', room: room }));
+            status('✅ КОМНАТА ' + room + ' СОЗДАНА! Ждём друга...', '#1a5f1a');
+        };
+
+        ws.onmessage = async (msg) => {
+            const data = JSON.parse(msg.data);
+            
+            if (data.type === 'viewer_joined') {
+                status('📞 ДРУГ ПОДКЛЮЧАЕТСЯ...', '#ffaa00');
+                createOffer();
+            }
+            else if (data.type === 'answer') {
+                await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                status('✅ ТРАНСЛЯЦИЯ ИДЁТ! Друг вас видит', '#1a5f1a');
+            }
+            else if (data.type === 'ice') {
+                if (pc) {
+                    await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                }
+            }
+        };
+
+        ws.onerror = () => {
+            status('❌ Ошибка сервера. Попробуйте позже', '#8b0000');
+        };
+    };
+
+    async function createOffer() {
         pc = new RTCPeerConnection({
-            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
         });
 
         localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
 
         pc.onicecandidate = (e) => {
-            if (e.candidate) {
-                console.log('ICE кандидат:', e.candidate);
+            if (e.candidate && ws) {
+                ws.send(JSON.stringify({ type: 'ice', candidate: e.candidate, room: room }));
             }
-        };
-
-        // Ждём ответа от друга
-        pc.ontrack = (e) => {
-            // Хост не показывает видео друга, только транслирует
-            console.log('Трек получен');
         };
 
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        
-        currentOffer = offer;
-        const offerCode = JSON.stringify(offer);
-        
-        document.getElementById('offerCode').innerText = offerCode;
-        document.getElementById('codeArea').style.display = 'block';
-        document.getElementById('answerArea').style.display = 'block';
-        
-        status('✅ КОМНАТА ' + room + ' СОЗДАНА! Отправьте код другу и ждите ответа', '#1a5f1a');
-    };
-
-    // Копировать код
-    document.getElementById('copyCodeBtn').onclick = () => {
-        const code = document.getElementById('offerCode').innerText;
-        navigator.clipboard.writeText(code);
-        status('✅ Код скопирован! Отправьте другу', '#1a5f1a');
-    };
-
-    // Подтвердить ответ от друга
-    document.getElementById('submitAnswerBtn').onclick = async () => {
-        const answerCode = document.getElementById('answerInput').value.trim();
-        if (!answerCode) {
-            status('❌ Вставьте ответ от друга', '#8b0000');
-            return;
-        }
-
-        try {
-            const answer = JSON.parse(answerCode);
-            await pc.setRemoteDescription(new RTCSessionDescription(answer));
-            
-            document.getElementById('cameraArea').style.display = 'block';
-            document.getElementById('codeArea').style.display = 'none';
-            document.getElementById('answerArea').style.display = 'none';
-            
-            status('✅ ДРУГ ПОДКЛЮЧИЛСЯ! Трансляция идёт', '#1a5f1a');
-        } catch(e) {
-            status('❌ Ошибка: неверный ответ от друга', '#8b0000');
-        }
-    };
+        ws.send(JSON.stringify({ type: 'offer', offer: offer, room: room }));
+    }
 
     document.getElementById('stopBtn').onclick = () => {
         if (pc) pc.close();
+        if (ws) ws.close();
         if (localStream) localStream.getTracks().forEach(t => t.stop());
         document.getElementById('cameraArea').style.display = 'none';
         status('📴 Трансляция остановлена', '#333');
+        location.reload();
     };
 </script>
 </body>
