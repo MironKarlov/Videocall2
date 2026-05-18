@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Хост - создание комнаты</title>
+    <title>Хост - создать комнату</title>
     <style>
         body { font-family: system-ui; background: #0a0a0a; color: white; padding: 20px; text-align: center; }
         button { background: #22c55e; padding: 15px 30px; font-size: 18px; border: none; border-radius: 50px; color: white; margin: 10px; width: 90%; }
@@ -11,6 +11,7 @@
         video { width: 100%; border-radius: 20px; margin-top: 10px; background: #111; }
         .box { background: #1a1a1a; padding: 20px; border-radius: 20px; margin: 15px 0; }
         .ip-box { background: #22c55e20; border: 2px solid #22c55e; padding: 15px; border-radius: 20px; font-size: 24px; font-family: monospace; }
+        .code-box { background: #3b82f620; border: 2px solid #3b82f6; padding: 15px; border-radius: 20px; font-size: 12px; font-family: monospace; word-break: break-all; text-align: left; max-height: 200px; overflow: auto; }
         .green { background: #22c55e; color: black; }
     </style>
 </head>
@@ -30,6 +31,22 @@
     <button id="createRoomBtn">🏠 СОЗДАТЬ КОМНАТУ</button>
 </div>
 
+<div id="codeArea" style="display:none">
+    <div class="box">
+        <p>📤 <strong>ОТПРАВЬТЕ ЭТОТ КОД ДРУГУ</strong></p>
+        <div class="code-box" id="offerCode"></div>
+        <button id="copyCodeBtn">📋 КОПИРОВАТЬ КОД</button>
+    </div>
+</div>
+
+<div id="answerArea" style="display:none">
+    <div class="box">
+        <p>📥 <strong>ВСТАВЬТЕ ОТВЕТ ОТ ДРУГА</strong></p>
+        <textarea id="answerInput" rows="5" style="width:100%; padding:10px; border-radius:10px; background:#1a1a1a; color:white; border:1px solid #3b82f6"></textarea>
+        <button id="submitAnswerBtn">✅ ПОДТВЕРДИТЬ ОТВЕТ</button>
+    </div>
+</div>
+
 <div id="cameraArea" style="display:none">
     <div class="box">
         <p>🎥 <strong>ТРАНСЛЯЦИЯ (вас видят)</strong></p>
@@ -45,6 +62,7 @@
     let pc = null;
     let myIp = null;
     let room = null;
+    let currentOffer = null;
 
     function status(msg, color = '#ffaa00') {
         const div = document.getElementById('status');
@@ -101,7 +119,7 @@
         const ok = await startCamera();
         if (!ok) return;
 
-        // Создаём WebRTC соединение и ждём подключения
+        // Создаём WebRTC соединение
         pc = new RTCPeerConnection({
             iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
         });
@@ -114,36 +132,53 @@
             }
         };
 
+        // Ждём ответа от друга
+        pc.ontrack = (e) => {
+            // Хост не показывает видео друга, только транслирует
+            console.log('Трек получен');
+        };
+
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-
-        // Сохраняем offer в localStorage (для передачи другу)
+        
+        currentOffer = offer;
         const offerCode = JSON.stringify(offer);
-        localStorage.setItem('room_' + room, offerCode);
         
-        document.getElementById('cameraArea').style.display = 'block';
-        status('✅ КОМНАТА ' + room + ' СОЗДАНА! Ждём подключения друга...', '#1a5f1a');
+        document.getElementById('offerCode').innerText = offerCode;
+        document.getElementById('codeArea').style.display = 'block';
+        document.getElementById('answerArea').style.display = 'block';
         
-        // Ждём ответа от друга
-        waitForAnswer();
+        status('✅ КОМНАТА ' + room + ' СОЗДАНА! Отправьте код другу и ждите ответа', '#1a5f1a');
     };
 
-    async function waitForAnswer() {
-        const interval = setInterval(async () => {
-            const answerCode = localStorage.getItem('answer_' + room);
-            if (answerCode && pc) {
-                clearInterval(interval);
-                try {
-                    const answer = JSON.parse(answerCode);
-                    await pc.setRemoteDescription(new RTCSessionDescription(answer));
-                    status('✅ ДРУГ ПОДКЛЮЧИЛСЯ! Трансляция идёт', '#1a5f1a');
-                    localStorage.removeItem('answer_' + room);
-                } catch(e) {
-                    status('❌ Ошибка подключения', '#8b0000');
-                }
-            }
-        }, 1000);
-    }
+    // Копировать код
+    document.getElementById('copyCodeBtn').onclick = () => {
+        const code = document.getElementById('offerCode').innerText;
+        navigator.clipboard.writeText(code);
+        status('✅ Код скопирован! Отправьте другу', '#1a5f1a');
+    };
+
+    // Подтвердить ответ от друга
+    document.getElementById('submitAnswerBtn').onclick = async () => {
+        const answerCode = document.getElementById('answerInput').value.trim();
+        if (!answerCode) {
+            status('❌ Вставьте ответ от друга', '#8b0000');
+            return;
+        }
+
+        try {
+            const answer = JSON.parse(answerCode);
+            await pc.setRemoteDescription(new RTCSessionDescription(answer));
+            
+            document.getElementById('cameraArea').style.display = 'block';
+            document.getElementById('codeArea').style.display = 'none';
+            document.getElementById('answerArea').style.display = 'none';
+            
+            status('✅ ДРУГ ПОДКЛЮЧИЛСЯ! Трансляция идёт', '#1a5f1a');
+        } catch(e) {
+            status('❌ Ошибка: неверный ответ от друга', '#8b0000');
+        }
+    };
 
     document.getElementById('stopBtn').onclick = () => {
         if (pc) pc.close();
